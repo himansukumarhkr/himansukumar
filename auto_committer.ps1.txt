@@ -1,4 +1,3 @@
-# Ensure security assemblies are loaded for VDI environments
 try {
     Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue
 } catch {}
@@ -12,34 +11,25 @@ $SourceFile = Join-Path $ScriptDir "source.txt"
 
 if (-not (Test-Path $SourceFile)) {
     $sampleContent = @"
-Line 1: Hello World from auto-committer
-Line 2: This is the second line of code
-Line 3: Adding another batch increment
-Line 4: Testing incremental GitLab commits
-Line 5: Final sample line in source.txt
+public class DynamicData {
+    public static void main(String[] args) {
+        System.out.println("Processing dynamic records...");
+    }
+}
 "@
     Set-Content -Path $SourceFile -Value $sampleContent -Encoding UTF8
-    Write-Host "[INFO] source.txt was missing. Created sample source.txt file." -ForegroundColor Yellow
+    Write-Host "[INFO] source.txt was missing. Created sample source file." -ForegroundColor Yellow
 }
 
-if (-not (Test-Path $StateFile)) {
-    Write-Host "[INFO] state.json was missing. Running first-time configuration..." -ForegroundColor Cyan
-    $pat             = Read-Host "Enter your GitLab Personal Access Token (PAT)"
-    $targetUrl       = Read-Host "Enter Target GitLab File URL"
-    $numCommits      = Read-Host "Enter number of commits per run [Default: 5]"
+function New-StateConfig {
+    Write-Host "[INFO] Running configuration setup..." -ForegroundColor Cyan
+    $pat        = Read-Host "Enter your GitLab Personal Access Token (PAT)"
+    $targetUrl  = Read-Host "Enter Target GitLab File URL"
+    $numCommits = Read-Host "Enter number of commits per run [Default: 5]"
     if ([string]::IsNullOrWhiteSpace($numCommits)) { $numCommits = 5 } else { $numCommits = [int]$numCommits }
-    $linesPer        = Read-Host "Enter lines per commit [Default: 2]"
+    $linesPer   = Read-Host "Enter lines per commit [Default: 2]"
     if ([string]::IsNullOrWhiteSpace($linesPer)) { $linesPer = 2 } else { $linesPer = [int]$linesPer }
-    $compulsoryLines = Read-Host "Enter compulsory text for commit messages [Default: Update component]"
-    if ([string]::IsNullOrWhiteSpace($compulsoryLines)) { $compulsoryLines = "Update component" }
-    $phrasesInput    = Read-Host "Enter random phrases separated by commas [Default: refactor core logic, optimize performance, fix minor edge case]"
-    if ([string]::IsNullOrWhiteSpace($phrasesInput)) {
-        $randomPhrases = @("refactor core logic", "optimize performance", "fix minor edge case")
-    } else {
-        $randomPhrases = $phrasesInput -split ',' | ForEach-Object { $_.Trim() }
-    }
 
-    # Attempt DPAPI encryption, fallback to plain text if VDI restricts it
     $storedPat = $pat
     try {
         $patBytes = [System.Text.Encoding]::UTF8.GetBytes($pat)
@@ -51,40 +41,60 @@ if (-not (Test-Path $StateFile)) {
         Write-Host "[WARNING] DPAPI restricted by VDI policy. Saving PAT in standard format." -ForegroundColor Yellow
     }
 
-    $state = [PSCustomObject]@{
-        pat             = $storedPat
-        targetFile      = $targetUrl
-        numCommits      = [int]$numCommits
-        linesPerCommit  = [int]$linesPer
-        cursor          = 0
-        compulsoryLines = $compulsoryLines
-        randomPhrases   = $randomPhrases
+    $newState = [PSCustomObject]@{
+        pat            = $storedPat
+        targetFile     = $targetUrl
+        numCommits     = [int]$numCommits
+        linesPerCommit = [int]$linesPer
+        cursor         = 0
+        commitMessages = @(
+            "BVB-24160 Co-Authored-By: Duo",
+            "Update component - refactor core logic",
+            "Enhance stability and fix edge cases",
+            "Optimize performance metrics"
+        )
     }
-    $state | ConvertTo-Json -Depth 4 | Set-Content -Path $StateFile -Encoding UTF8
+    $newState | ConvertTo-Json -Depth 4 | Set-Content -Path $StateFile -Encoding UTF8
     Write-Host "[SUCCESS] state.json created successfully!" -ForegroundColor Green
+    return $newState
 }
 
-$state           = Get-Content $StateFile -Raw | ConvertFrom-Json
-$targetUrl       = $state.targetFile
-$numCommits      = [int]$state.numCommits
-$linesPer        = [int]$state.linesPerCommit
-$cursor          = [int]$state.cursor
-$compulsoryLines = $state.compulsoryLines
-$randomPhrases   = $state.randomPhrases
+$state = $null
+if (Test-Path $StateFile) {
+    try {
+        $rawContent = Get-Content -Path $StateFile -Raw -ErrorAction Stop
+        $state = $rawContent | ConvertFrom-Json -ErrorAction Stop
+        if (-not $state.pat -or -not $state.targetFile) {
+            throw "Invalid state structure"
+        }
+    }
+    catch {
+        Write-Host "[WARNING] state.json is corrupted or invalid. Generating a fresh configuration..." -ForegroundColor Yellow
+        $state = New-StateConfig
+    }
+} else {
+    Write-Host "[INFO] state.json was missing." -ForegroundColor Cyan
+    $state = New-StateConfig
+}
 
-# Decrypt PAT if encrypted, otherwise use as-is
+$targetUrl      = $state.targetFile
+$numCommits     = [int]$state.numCommits
+$linesPer       = [int]$state.linesPerCommit
+$cursor         = [int]$state.cursor
+$commitMessages = $state.commitMessages
+
 $pat = $state.pat
 try {
     $encryptedPatBytes = [Convert]::FromBase64String($state.pat)
     $decryptedPatBytes = [System.Security.Cryptography.ProtectedData]::Unprotect($encryptedPatBytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
     $pat = [System.Text.Encoding]::UTF8.GetString($decryptedPatBytes)
 }
-catch {
-    # If unprotection fails or it was stored unencrypted, use the string directly
-}
+catch {}
 
 function Parse-GitLabUrl($url) {
-    if ($url -match '^(https?://[^/]+)/(.+?)/-/blob/([^/]+)/(.*)$') {
+    $cleanUrl = if ($url -match '^([^?]+)') { $Matches[1] } else { $url }
+
+    if ($cleanUrl -match '^(https?://[^/]+)/(.+?)/-/blob/([^/]+)/(.*)$') {
         $domain = $Matches[1]
         $projectPath = [System.Uri]::EscapeDataString($Matches[2])
         $branch = $Matches[3]
@@ -133,7 +143,7 @@ function Get-TargetFileContent($apiUrl, $branch, $headers) {
         return [System.Text.Encoding]::UTF8.GetString($decodedBytes)
     }
     catch {
-        return ""
+        return $null
     }
 }
 
@@ -162,6 +172,28 @@ $currentTargetPath = $targetInfo.ApiUrl
 Write-Host "[INFO] Fetching current target file status from GitLab..." -ForegroundColor Cyan
 $existingTargetContent = Get-TargetFileContent -apiUrl $currentTargetPath -branch $targetInfo.Branch -headers $headers
 
+if ($null -eq $existingTargetContent) {
+    Write-Host "[WARNING] Failed to authenticate or fetch from GitLab. Your PAT may be expired or invalid. Let's re-configure state.json..." -ForegroundColor Yellow
+    $state = New-StateConfig
+    $targetUrl      = $state.targetFile
+    $numCommits     = [int]$state.numCommits
+    $linesPer       = [int]$state.linesPerCommit
+    $cursor         = [int]$state.cursor
+    $commitMessages = $state.commitMessages
+
+    $pat = $state.pat
+    try {
+        $encryptedPatBytes = [Convert]::FromBase64String($state.pat)
+        $decryptedPatBytes = [System.Security.Cryptography.ProtectedData]::Unprotect($encryptedPatBytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+        $pat = [System.Text.Encoding]::UTF8.GetString($decryptedPatBytes)
+    }
+    catch {}
+    $headers = @{ "PRIVATE-TOKEN" = $pat }
+    $targetInfo = Parse-GitLabUrl $targetUrl
+    $currentTargetPath = $targetInfo.ApiUrl
+    $existingTargetContent = Get-TargetFileContent -apiUrl $currentTargetPath -branch $targetInfo.Branch -headers $headers
+}
+
 for ($i = 1; $i -le $numCommits; $i++) {
     if ($cursor -ge $totalLines) {
         Write-Host "[INFO] Reached the end of source.txt. Stopping batch run." -ForegroundColor Yellow
@@ -189,13 +221,11 @@ for ($i = 1; $i -le $numCommits; $i++) {
     $state.cursor = $cursor
     $state | ConvertTo-Json -Depth 4 | Set-Content -Path $StateFile -Encoding UTF8
 
-    $randomPhrase = if ($randomPhrases -and $randomPhrases.Count -gt 0) {
-        $randomPhrases | Get-Random
+    $commitMsg = if ($commitMessages -and $commitMessages.Count -gt 0) {
+        $commitMessages | Get-Random
     } else {
-        ""
+        "Update component"
     }
-
-    $commitMsg = "$compulsoryLines - $randomPhrase"
     Write-Host "Commit Message: '$commitMsg'" -ForegroundColor DarkCyan
 
     $success = Commit-TargetFileContent -apiUrl $currentTargetPath -branch $targetInfo.Branch -content $existingTargetContent -commitMessage $commitMsg -headers $headers
