@@ -96,14 +96,18 @@ function Parse-GitLabUrl($url) {
 
     if ($cleanUrl -match '^(https?://[^/]+)/(.+?)/-/blob/([^/]+)/(.*)$') {
         $domain = $Matches[1]
-        $projectPath = [System.Uri]::EscapeDataString($Matches[2])
+        $projectPart = $Matches[2]
         $branch = $Matches[3]
-        $filePath = [System.Uri]::EscapeDataString($Matches[4])
-        $apiUrl = "$domain/api/v4/projects/$projectPath/repository/files/$filePath"
+        $filePathPart = [System.Net.WebUtility]::UrlDecode($Matches[4])
+
+        $projectEncoded = ($projectPart -split '/' | ForEach-Object { [System.Uri]::EscapeDataString($_) }) -join '%2F'
+        $fileEncoded = ($filePathPart -split '/' | ForEach-Object { [System.Uri]::EscapeDataString($_) }) -join '%2F'
+
+        $apiUrl = "$domain/api/v4/projects/$projectEncoded/repository/files/$fileEncoded"
         return @{
             ApiUrl   = $apiUrl
             Branch   = $branch
-            FilePath = $Matches[4]
+            FilePath = $filePathPart
         }
     }
     else {
