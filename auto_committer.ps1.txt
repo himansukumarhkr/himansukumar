@@ -92,29 +92,43 @@ try {
 catch {}
 
 function Parse-GitLabUrl($url) {
+    # 1. Strip query parameters (anything from '?' onwards)
     $cleanUrl = if ($url -match '^([^?]+)') { $Matches[1] } else { $url }
 
-    if ($cleanUrl -match '^(https?://[^/]+)/(.+?)/-/blob/([^/]+)/(.*)$') {
-        $domain = $Matches[1]
-        $fullPath = $Matches[2]
-        $branch = $Matches[3]
-        $remainingPath = $Matches[4]
-
-        # Correct GitLab API project path encoding (replacing slashes with %2F while keeping path segments safe)
-        $projectEncoded = ($fullPath -split '/' | ForEach-Object { [System.Uri]::EscapeDataString($_) }) -join '%2F'
-
-        $filePathPart = [System.Net.WebUtility]::UrlDecode($remainingPath)
-        $fileEncoded = ($filePathPart -split '/' | ForEach-Object { [System.Uri]::EscapeDataString($_) }) -join '%2F'
-
-        $apiUrl = "$domain/api/v4/projects/$projectEncoded/repository/files/$fileEncoded"
-        return @{
-            ApiUrl   = $apiUrl
-            Branch   = $branch
-            FilePath = $filePathPart
-        }
+    if ($cleanUrl -notmatch '/-/blob/') {
+        throw "Invalid GitLab URL format: Missing '/-/blob/' separator in $url"
     }
-    else {
-        throw "Invalid GitLab URL format: $url"
+
+    # 2. Split cleanly by the blob boundary
+    $parts = $cleanUrl -split '/-/blob/'
+    $leftPart = $parts[0]  # Contains Domain + Nested Project Path
+    $rightPart = $parts[1] # Contains Branch + File Path
+
+    # 3. Separate Domain and Project Path
+    if ($leftPart -match '^(https?://[^/]+)/(.*?)$') {
+        $domain = $Matches[1]
+        $projectPath = $Matches[2]
+    } else {
+        throw "Could not parse domain and project path from: $leftPart"
+    }
+
+    # 4. Separate Branch and File Path
+    $rightSegments = $rightPart -split '/', 2
+    $branch = $rightSegments[0]
+    $filePath = $rightSegments[1]
+
+    # 5. Properly encode for GitLab REST API v4
+    $projectEncoded = ($projectPath -split '/' | ForEach-Object { [System.Uri]::EscapeDataString($_) }) -join '%2F'
+    
+    $decodedFilePath = [System.Net.WebUtility]::UrlDecode($filePath)
+    $fileEncoded = ($decodedFilePath -split '/' | ForEach-Object { [System.Uri]::EscapeDataString($_) }) -join '%2F'
+
+    $apiUrl = "$domain/api/v4/projects/$projectEncoded/repository/files/$fileEncoded"
+
+    return @{
+        ApiUrl   = $apiUrl
+        Branch   = $branch
+        FilePath = $decodedFilePath
     }
 }
 
