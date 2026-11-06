@@ -1,0 +1,211 @@
+# Ensure security assemblies are loaded for VDI environments
+try {
+    Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue
+} catch {}
+
+[System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}
+[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls13
+
+$ScriptDir  = $PSScriptRoot
+$StateFile  = Join-Path $ScriptDir "state.json"
+$SourceFile = Join-Path $ScriptDir "source.txt"
+
+if (-not (Test-Path $SourceFile)) {
+    $sampleContent = @"
+Line 1: Hello World from auto-committer
+Line 2: This is the second line of code
+Line 3: Adding another batch increment
+Line 4: Testing incremental GitLab commits
+Line 5: Final sample line in source.txt
+"@
+    Set-Content -Path $SourceFile -Value $sampleContent -Encoding UTF8
+    Write-Host "[INFO] source.txt was missing. Created sample source.txt file." -ForegroundColor Yellow
+}
+
+if (-not (Test-Path $StateFile)) {
+    Write-Host "[INFO] state.json was missing. Running first-time configuration..." -ForegroundColor Cyan
+    $pat             = Read-Host "Enter your GitLab Personal Access Token (PAT)"
+    $targetUrl       = Read-Host "Enter Target GitLab File URL"
+    $numCommits      = Read-Host "Enter number of commits per run [Default: 5]"
+    if ([string]::IsNullOrWhiteSpace($numCommits)) { $numCommits = 5 } else { $numCommits = [int]$numCommits }
+    $linesPer        = Read-Host "Enter lines per commit [Default: 2]"
+    if ([string]::IsNullOrWhiteSpace($linesPer)) { $linesPer = 2 } else { $linesPer = [int]$linesPer }
+    $compulsoryLines = Read-Host "Enter compulsory text for commit messages [Default: Update component]"
+    if ([string]::IsNullOrWhiteSpace($compulsoryLines)) { $compulsoryLines = "Update component" }
+    $phrasesInput    = Read-Host "Enter random phrases separated by commas [Default: refactor core logic, optimize performance, fix minor edge case]"
+    if ([string]::IsNullOrWhiteSpace($phrasesInput)) {
+        $randomPhrases = @("refactor core logic", "optimize performance", "fix minor edge case")
+    } else {
+        $randomPhrases = $phrasesInput -split ',' | ForEach-Object { $_.Trim() }
+    }
+
+    # Attempt DPAPI encryption, fallback to plain text if VDI restricts it
+    $storedPat = $pat
+    try {
+        $patBytes = [System.Text.Encoding]::UTF8.GetBytes($pat)
+        $encryptedPatBytes = [System.Security.Cryptography.ProtectedData]::Protect($patBytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+        $storedPat = [Convert]::ToBase64String($encryptedPatBytes)
+        Write-Host "[SUCCESS] PAT securely encrypted via Windows DPAPI!" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "[WARNING] DPAPI restricted by VDI policy. Saving PAT in standard format." -ForegroundColor Yellow
+    }
+
+    $state = [PSCustomObject]@{
+        pat             = $storedPat
+        targetFile      = $targetUrl
+        numCommits      = [int]$numCommits
+        linesPerCommit  = [int]$linesPer
+        cursor          = 0
+        compulsoryLines = $compulsoryLines
+        randomPhrases   = $randomPhrases
+    }
+    $state | ConvertTo-Json -Depth 4 | Set-Content -Path $StateFile -Encoding UTF8
+    Write-Host "[SUCCESS] state.json created successfully!" -ForegroundColor Green
+}
+
+$state           = Get-Content $StateFile -Raw | ConvertFrom-Json
+$targetUrl       = $state.targetFile
+$numCommits      = [int]$state.numCommits
+$linesPer        = [int]$state.linesPerCommit
+$cursor          = [int]$state.cursor
+$compulsoryLines = $state.compulsoryLines
+$randomPhrases   = $state.randomPhrases
+
+# Decrypt PAT if encrypted, otherwise use as-is
+$pat = $state.pat
+try {
+    $encryptedPatBytes = [Convert]::FromBase64String($state.pat)
+    $decryptedPatBytes = [System.Security.Cryptography.ProtectedData]::Unprotect($encryptedPatBytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+    $pat = [System.Text.Encoding]::UTF8.GetString($decryptedPatBytes)
+}
+catch {
+    # If unprotection fails or it was stored unencrypted, use the string directly
+}
+
+function Parse-GitLabUrl($url) {
+    if ($url -match '^(https?://[^/]+)/(.+?)/-/blob/([^/]+)/(.*)$') {
+        $domain = $Matches[1]
+        $projectPath = [System.Uri]::EscapeDataString($Matches[2])
+        $branch = $Matches[3]
+        $filePath = [System.Uri]::EscapeDataString($Matches[4])
+        $apiUrl = "$domain/api/v4/projects/$projectPath/repository/files/$filePath"
+        return @{
+            ApiUrl   = $apiUrl
+            Branch   = $branch
+            FilePath = $Matches[4]
+        }
+    }
+    else {
+        throw "Invalid GitLab URL format: $url"
+    }
+}
+
+try {
+    $targetInfo = Parse-GitLabUrl $targetUrl
+}
+catch {
+    Write-Error "[ERROR] $_"
+    exit 1
+}
+
+$headers = @{
+    "PRIVATE-TOKEN" = $pat
+}
+
+$fullContent = Get-Content -Path $SourceFile -Raw -Encoding UTF8
+$fullContent = $fullContent -replace "`r`n", "`n" -replace "`r", "`n"
+$lines = $fullContent -split "`n"
+
+$totalLines = $lines.Count
+Write-Host "[INFO] Loaded source.txt. Total lines available: $totalLines | Starting Cursor: $cursor" -ForegroundColor Cyan
+
+if ($cursor -ge $totalLines) {
+    Write-Host "[INFO] Cursor has reached the end of the file. Resetting cursor to 0." -ForegroundColor Yellow
+    $cursor = 0
+}
+
+function Get-TargetFileContent($apiUrl, $branch, $headers) {
+    $uri = "$apiUrl?ref=$branch"
+    try {
+        $res = Invoke-RestMethod -Uri $uri -Headers $headers -Method Get -UseDefaultCredentials -ErrorAction Stop
+        $decodedBytes = [System.Convert]::FromBase64String($res.content)
+        return [System.Text.Encoding]::UTF8.GetString($decodedBytes)
+    }
+    catch {
+        return ""
+    }
+}
+
+function Commit-TargetFileContent($apiUrl, $branch, $content, $commitMessage, $headers) {
+    $body = @{
+        branch         = $branch
+        commit_message = $commitMessage
+        content        = $content
+        encoding       = "text"
+    } | ConvertTo-Json
+
+    try {
+        $existing = Invoke-RestMethod -Uri "$apiUrl?ref=$branch" -Headers $headers -Method Get -UseDefaultCredentials -ErrorAction SilentlyContinue
+        $method = if ($existing) { "Put" } else { "Post" }
+
+        $null = Invoke-RestMethod -Uri $apiUrl -Headers $headers -Method $method -Body $body -ContentType "application/json" -UseDefaultCredentials -ErrorAction Stop
+        return $true
+    }
+    catch {
+        Write-Error "[API ERROR] Failed to commit: $_"
+        return $false
+    }
+}
+
+$currentTargetPath = $targetInfo.ApiUrl
+Write-Host "[INFO] Fetching current target file status from GitLab..." -ForegroundColor Cyan
+$existingTargetContent = Get-TargetFileContent -apiUrl $currentTargetPath -branch $targetInfo.Branch -headers $headers
+
+for ($i = 1; $i -le $numCommits; $i++) {
+    if ($cursor -ge $totalLines) {
+        Write-Host "[INFO] Reached the end of source.txt. Stopping batch run." -ForegroundColor Yellow
+        break
+    }
+
+    $endIndex = [Math]::Min($cursor + $linesPer, $totalLines)
+    $batchLines = $lines[$cursor..($endIndex - 1)]
+    $batchText = $batchLines -join "`n"
+
+    Write-Host "`n----------------------------------------" -ForegroundColor DarkGray
+    Write-Host "Processing Commit Step $i of $numCommits (Lines: $($cursor + 1) to $endIndex):" -ForegroundColor Magenta
+    foreach ($bl in $batchLines) {
+        Write-Host "  > $bl" -ForegroundColor Gray
+    }
+
+    if ([string]::IsNullOrEmpty($existingTargetContent)) {
+        $existingTargetContent = $batchText
+    } else {
+        $existingTargetContent += "`n" + $batchText
+    }
+
+    $cursor = $endIndex
+
+    $state.cursor = $cursor
+    $state | ConvertTo-Json -Depth 4 | Set-Content -Path $StateFile -Encoding UTF8
+
+    $randomPhrase = if ($randomPhrases -and $randomPhrases.Count -gt 0) {
+        $randomPhrases | Get-Random
+    } else {
+        ""
+    }
+
+    $commitMsg = "$compulsoryLines - $randomPhrase"
+    Write-Host "Commit Message: '$commitMsg'" -ForegroundColor DarkCyan
+
+    $success = Commit-TargetFileContent -apiUrl $currentTargetPath -branch $targetInfo.Branch -content $existingTargetContent -commitMessage $commitMsg -headers $headers
+    
+    if ($success) {
+        Write-Host "[SUCCESS] Successfully pushed commit to GitLab!" -ForegroundColor Green
+    } else {
+        Write-Host "[FAILED] Commit failed. Aborting remaining batches." -ForegroundColor Red
+        break
+    }
+}
+
+Write-Host "`n[DONE] Batch run finished. Current saved cursor: $cursor" -ForegroundColor Cyan
