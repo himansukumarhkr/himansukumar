@@ -100,11 +100,8 @@ function Parse-GitLabUrl($url) {
         $branch = $Matches[3]
         $remainingPath = $Matches[4]
 
-        $projectEncoded = [System.Web.HttpUtility]::UrlEncode($fullPath)
-        if (-not $projectEncoded) {
-            $projectEncoded = [System.Uri]::EscapeDataString($fullPath) -replace '%2F', '/'
-        }
-        $projectEncoded = $projectEncoded -replace '%2f', '%2F'
+        # Correct GitLab API project path encoding (replacing slashes with %2F while keeping path segments safe)
+        $projectEncoded = ($fullPath -split '/' | ForEach-Object { [System.Uri]::EscapeDataString($_) }) -join '%2F'
 
         $filePathPart = [System.Net.WebUtility]::UrlDecode($remainingPath)
         $fileEncoded = ($filePathPart -split '/' | ForEach-Object { [System.Uri]::EscapeDataString($_) }) -join '%2F'
@@ -153,6 +150,13 @@ function Get-TargetFileContent($apiUrl, $branch, $headers) {
         return [System.Text.Encoding]::UTF8.GetString($decodedBytes)
     }
     catch {
+        $statusCode = $_.Exception.Response.StatusCode.value__
+        if ($statusCode -eq 404) {
+            return ""
+        }
+        if ($statusCode -eq 401 -or $statusCode -eq 403) {
+            throw "AUTH_ERROR"
+        }
         return $null
     }
 }
@@ -181,10 +185,24 @@ function Commit-TargetFileContent($apiUrl, $branch, $content, $commitMessage, $h
 
 $currentTargetPath = $targetInfo.ApiUrl
 Write-Host "[INFO] Fetching current target file status from GitLab..." -ForegroundColor Cyan
-$existingTargetContent = Get-TargetFileContent -apiUrl $currentTargetPath -branch $targetInfo.Branch -headers $headers
 
-if ($null -eq $existingTargetContent) {
-    Write-Host "[WARNING] Failed to authenticate or fetch from GitLab. Your PAT may be expired or invalid. Let's re-configure state.json..." -ForegroundColor Yellow
+$authFailed = $false
+try {
+    $existingTargetContent = Get-TargetFileContent -apiUrl $currentTargetPath -branch $targetInfo.Branch -headers $headers
+    if ($null -eq $existingTargetContent) {
+        $existingTargetContent = ""
+    }
+}
+catch {
+    if ($_.Exception.Message -eq "AUTH_ERROR") {
+        $authFailed = $true
+    } else {
+        $existingTargetContent = ""
+    }
+}
+
+if ($authFailed) {
+    Write-Host "[WARNING] Authentication failed (Invalid or expired PAT). Let's re-configure state.json..." -ForegroundColor Yellow
     $state = New-StateConfig
     $targetUrl      = $state.targetFile
     $numCommits     = [int]$state.numCommits
@@ -202,7 +220,7 @@ if ($null -eq $existingTargetContent) {
     $headers = @{ "PRIVATE-TOKEN" = $pat }
     $targetInfo = Parse-GitLabUrl $targetUrl
     $currentTargetPath = $targetInfo.ApiUrl
-    $existingTargetContent = Get-TargetFileContent -apiUrl $currentTargetPath -branch $targetInfo.Branch -headers $headers
+    $existingTargetContent = ""
 }
 
 for ($i = 1; $i -le $numCommits; $i++) {
