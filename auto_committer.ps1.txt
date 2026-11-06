@@ -96,11 +96,17 @@ function Parse-GitLabUrl($url) {
 
     if ($cleanUrl -match '^(https?://[^/]+)/(.+?)/-/blob/([^/]+)/(.*)$') {
         $domain = $Matches[1]
-        $projectPart = $Matches[2]
+        $fullPath = $Matches[2]
         $branch = $Matches[3]
-        $filePathPart = [System.Net.WebUtility]::UrlDecode($Matches[4])
+        $remainingPath = $Matches[4]
 
-        $projectEncoded = ($projectPart -split '/' | ForEach-Object { [System.Uri]::EscapeDataString($_) }) -join '%2F'
+        $projectEncoded = [System.Web.HttpUtility]::UrlEncode($fullPath)
+        if (-not $projectEncoded) {
+            $projectEncoded = [System.Uri]::EscapeDataString($fullPath) -replace '%2F', '/'
+        }
+        $projectEncoded = $projectEncoded -replace '%2f', '%2F'
+
+        $filePathPart = [System.Net.WebUtility]::UrlDecode($remainingPath)
         $fileEncoded = ($filePathPart -split '/' | ForEach-Object { [System.Uri]::EscapeDataString($_) }) -join '%2F'
 
         $apiUrl = "$domain/api/v4/projects/$projectEncoded/repository/files/$fileEncoded"
@@ -160,7 +166,8 @@ function Commit-TargetFileContent($apiUrl, $branch, $content, $commitMessage, $h
     } | ConvertTo-Json
 
     try {
-        $existing = Invoke-RestMethod -Uri "$apiUrl?ref=$branch" -Headers $headers -Method Get -UseDefaultCredentials -ErrorAction SilentlyContinue
+        $checkUri = "$apiUrl?ref=$branch"
+        $existing = Invoke-RestMethod -Uri $checkUri -Headers $headers -Method Get -UseDefaultCredentials -ErrorAction SilentlyContinue
         $method = if ($existing) { "Put" } else { "Post" }
 
         $null = Invoke-RestMethod -Uri $apiUrl -Headers $headers -Method $method -Body $body -ContentType "application/json" -UseDefaultCredentials -ErrorAction Stop
