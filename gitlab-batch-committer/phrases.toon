@@ -1,0 +1,19 @@
+# ==============================================================================
+# Commit Message Configuration (.toon format)
+# Human-friendly format: No quotes, no commas, no brackets needed!
+# Lines starting with '#' are comments.
+# ==============================================================================
+
+[COMPULSORY]
+# Enter your mandatory Jira ID, tag, or prefix below (leave empty if none):
+BVB-24160
+
+[PHRASES]
+# Enter your custom phrases below (one phrase per line).
+# Exactly 1 phrase will be chosen at random for each commit:
+refactor core logic
+enhance stability and fix edge cases
+optimize performance metrics
+update execution handlers and fixtures
+add validation for dynamic payload
+clean up redundant helper methods
