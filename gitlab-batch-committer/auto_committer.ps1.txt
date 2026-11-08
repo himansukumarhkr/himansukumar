@@ -1,9 +1,3 @@
-# ==============================================================================
-# GitLab Batch Committer (Universal Enterprise VDI & Public GitLab Compatible)
-# Commit Messages Managed via phrases.toon
-# ==============================================================================
-
-# Universal TLS & SSL bypass that does NOT break the .NET SChannel handshake
 try {
     if (-not ([System.Management.Automation.PSTypeName]'TrustAllCertsPolicy').Type) {
         Add-Type @'
@@ -21,7 +15,6 @@ public class TrustAllCertsPolicy : ICertificatePolicy {
     [System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
 } catch {}
 
-# Enable TLS 1.2, TLS 1.1, and TLS 1.0
 [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls11 -bor [System.Net.SecurityProtocolType]::Tls
 
 $ScriptDir  = $PSScriptRoot
@@ -29,7 +22,6 @@ $StateFile  = Join-Path $ScriptDir "state.json"
 $SourceFile = Join-Path $ScriptDir "source.txt"
 $ToonFile   = Join-Path $ScriptDir "phrases.toon"
 
-# Ensure source.txt exists with sample Java code if not present
 if (-not (Test-Path $SourceFile)) {
     $sampleContent = @"
 public class DynamicData {
@@ -42,22 +34,12 @@ public class DynamicData {
     Write-Host "[INFO] source.txt was missing. Created sample source file." -ForegroundColor Yellow
 }
 
-# Ensure phrases.toon exists with default template if not present
 if (-not (Test-Path $ToonFile)) {
     $sampleToon = @"
-# ==============================================================================
-# Commit Message Configuration (.toon format)
-# Human-friendly format: No quotes, no commas, no brackets needed!
-# Lines starting with '#' are comments.
-# ==============================================================================
-
 [COMPULSORY]
-# Enter your mandatory Jira ID, tag, or prefix below (leave empty if none):
 BVB-24160
 
 [PHRASES]
-# Enter your custom phrases below (one phrase per line).
-# Exactly 1 phrase will be chosen at random for each commit:
 refactor core logic
 enhance stability and fix edge cases
 optimize performance metrics
@@ -69,7 +51,6 @@ clean up redundant helper methods
     Write-Host "[INFO] phrases.toon created. You can edit phrases anytime in this file." -ForegroundColor Yellow
 }
 
-# Lightweight built-in parser for .toon format (no external modules needed)
 function Read-ToonConfig($path) {
     if (-not (Test-Path $path)) { return $null }
     $compulsory = ""
@@ -78,12 +59,10 @@ function Read-ToonConfig($path) {
 
     foreach ($line in (Get-Content -Path $path -Encoding UTF8)) {
         $trimmed = $line.Trim()
-        # Skip blank lines and comments
         if ([string]::IsNullOrWhiteSpace($trimmed) -or $trimmed.StartsWith("#")) {
             continue
         }
 
-        # Match section headers like [COMPULSORY] and [PHRASES]
         if ($trimmed -match '^\[(.*)\]$') {
             $currentSection = $Matches[1].ToUpper()
             continue
@@ -110,7 +89,6 @@ function Read-ToonConfig($path) {
     }
 }
 
-# Generates a commit message from .toon data: Compulsory + 1 Random Phrase
 function Get-FormattedCommitMessage($toonData) {
     $phrases = $toonData.Phrases
     $selectedPhrase = if ($phrases -and $phrases.Count -gt 0) {
@@ -131,7 +109,6 @@ function Get-FormattedCommitMessage($toonData) {
     }
 }
 
-# Function to initialize state configuration interactively
 function New-StateConfig {
     Write-Host "`n[SETUP] Configuring GitLab Batch Committer..." -ForegroundColor Cyan
     $pat       = Read-Host "Enter your GitLab Personal Access Token (PAT)"
@@ -143,7 +120,6 @@ function New-StateConfig {
     $linesPer = Read-Host "Enter lines per commit [Default: 2]"
     $linesPer = if ([string]::IsNullOrWhiteSpace($linesPer)) { 2 } else { [int]$linesPer }
 
-    # Attempt DPAPI encryption for PAT, fall back to plain text if restricted by VDI policy
     $storedPat = $pat
     try {
         $patBytes = [System.Text.Encoding]::UTF8.GetBytes($pat)
@@ -170,7 +146,6 @@ function New-StateConfig {
     return $newState
 }
 
-# Load or generate state
 $state = $null
 if (Test-Path $StateFile) {
     try {
@@ -188,7 +163,6 @@ if (Test-Path $StateFile) {
     $state = New-StateConfig
 }
 
-# Unprotect PAT if DPAPI was used
 $pat = $state.pat
 try {
     $bytes = [Convert]::FromBase64String($state.pat)
@@ -198,7 +172,6 @@ try {
     $pat = [System.Text.Encoding]::UTF8.GetString($decryptedBytes)
 } catch {}
 
-# Parses URL and resolves numeric project ID to prevent .NET URI parsing bugs
 function Parse-GitLabUrl($url, $token) {
     $cleanUrl = if ($url -match '^([^?]+)') { $Matches[1] } else { $url }
 
@@ -221,7 +194,6 @@ function Parse-GitLabUrl($url, $token) {
     $branch   = $rightSegments[0]
     $filePath = $rightSegments[1]
 
-    # Resolve project's numeric ID
     $encodedPath = [System.Uri]::EscapeDataString($projectPath)
     $lookupUri   = "$($domain)/api/v4/projects/$($encodedPath)"
 
@@ -237,7 +209,6 @@ function Parse-GitLabUrl($url, $token) {
     $decodedFilePath = [System.Net.WebUtility]::UrlDecode($filePath)
     $fileEncoded = ($decodedFilePath -split '/' | ForEach-Object { [System.Uri]::EscapeDataString($_) }) -join '%2F'
 
-    # Build final API URL using numeric project ID (avoids .NET URI %2F bug)
     $apiUrl = "$($domain)/api/v4/projects/$($numericId)/repository/files/$($fileEncoded)"
 
     return @{
@@ -247,7 +218,6 @@ function Parse-GitLabUrl($url, $token) {
     }
 }
 
-# Resolve target info
 try {
     $targetInfo = Parse-GitLabUrl $state.targetFile $pat
 } catch {
@@ -266,14 +236,12 @@ try {
 
 $headers = @{ "PRIVATE-TOKEN" = $pat }
 
-# Load source content
 $fullContent = Get-Content -Path $SourceFile -Raw -Encoding UTF8
 $fullContent = $fullContent -replace "`r`n", "`n" -replace "`r", "`n"
 $lines = $fullContent -split "`n"
 $totalLines = $lines.Count
 $cursor = [int]$state.cursor
 
-# Load toon configuration for commit messages
 $toonData = Read-ToonConfig -path $ToonFile
 $phraseCount = if ($toonData.Phrases) { $toonData.Phrases.Count } else { 0 }
 Write-Host "[INFO] Loaded phrases.toon ($phraseCount random phrases available | Compulsory: '$($toonData.Compulsory)')" -ForegroundColor Cyan
@@ -325,14 +293,12 @@ function Commit-TargetFileContent($apiUrl, $branch, $content, $message, $headers
     }
 }
 
-# Fetch current target file content
 Write-Host "[INFO] Fetching current content from GitLab..." -ForegroundColor Cyan
 $existingContent = Get-TargetFileContent -apiUrl $targetInfo.ApiUrl -branch $targetInfo.Branch -headers $headers
 if ($null -eq $existingContent) {
     $existingContent = ""
 }
 
-# Execute commit batches
 $numCommits = [int]$state.numCommits
 $linesPer   = [int]$state.linesPerCommit
 
@@ -358,14 +324,12 @@ for ($i = 1; $i -le $numCommits; $i++) {
         $existingContent += "`n" + $batchText
     }
 
-    # Generate commit message from .toon format
     $msg = Get-FormattedCommitMessage -toonData $toonData
 
     Write-Host "Commit Message: '$msg'" -ForegroundColor DarkCyan
     $ok = Commit-TargetFileContent -apiUrl $targetInfo.ApiUrl -branch $targetInfo.Branch -content $existingContent -message $msg -headers $headers
 
     if ($ok) {
-        # Advance cursor and save state ONLY upon verified success
         $cursor = $endIndex
         $state.cursor = $cursor
         $state | ConvertTo-Json -Depth 4 | Set-Content -Path $StateFile -Encoding UTF8

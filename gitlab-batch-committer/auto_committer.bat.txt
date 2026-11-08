@@ -7,7 +7,11 @@ echo          GitLab Batch Committer Launcher
 echo =======================================================
 echo.
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0auto_committer.ps1"
+if exist "%~dp0auto_committer.ps1" (
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0auto_committer.ps1"
+) else (
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0auto_committer.ps1.txt"
+)
 
 if %ERRORLEVEL% neq 0 (
     echo.
