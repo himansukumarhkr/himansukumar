@@ -22,16 +22,11 @@ $StateFile  = Join-Path $ScriptDir "state.json"
 $SourceFile = Join-Path $ScriptDir "source.txt"
 $ToonFile   = Join-Path $ScriptDir "phrases.toon"
 
+$sourceCreatedFirstTime = $false
 if (-not (Test-Path $SourceFile)) {
-    $sampleContent = @"
-public class DynamicData {
-    public static void main(String[] args) {
-        System.out.println("Processing dynamic records...");
-    }
-}
-"@
-    Set-Content -Path $SourceFile -Value $sampleContent -Encoding UTF8
-    Write-Host "[INFO] source.txt was missing. Created sample source file." -ForegroundColor Yellow
+    Set-Content -Path $SourceFile -Value "" -Encoding UTF8
+    Write-Host "[INFO] Created blank 'source.txt'." -ForegroundColor Yellow
+    $sourceCreatedFirstTime = $true
 }
 
 if (-not (Test-Path $ToonFile)) {
@@ -172,6 +167,7 @@ function New-StateConfig {
     return $newState
 }
 
+$isFirstRun = $false
 $state = $null
 if (Test-Path $StateFile) {
     try {
@@ -183,10 +179,28 @@ if (Test-Path $StateFile) {
     } catch {
         Write-Host "[WARNING] state.json is corrupted or invalid. Prompting for setup..." -ForegroundColor Yellow
         $state = New-StateConfig
+        $isFirstRun = $true
     }
 } else {
     Write-Host "[INFO] state.json not found. Running initial setup..." -ForegroundColor Cyan
     $state = New-StateConfig
+    $isFirstRun = $true
+}
+
+if ($isFirstRun -or $sourceCreatedFirstTime) {
+    Write-Host "===========================================================" -ForegroundColor Green
+    Write-Host "[SETUP COMPLETE] Initial configuration has been saved." -ForegroundColor Green
+    Write-Host "[ACTION REQUIRED] Please paste your source code into 'source.txt'" -ForegroundColor Yellow
+    Write-Host "and run the script again to begin committing." -ForegroundColor Yellow
+    Write-Host "===========================================================`n" -ForegroundColor Green
+    exit 0
+}
+
+$rawSource = if (Test-Path $SourceFile) { Get-Content -Path $SourceFile -Raw -Encoding UTF8 } else { "" }
+if ([string]::IsNullOrWhiteSpace($rawSource)) {
+    Write-Host "`n[WARNING] 'source.txt' is empty." -ForegroundColor Yellow
+    Write-Host "Please paste your source code into 'source.txt' and re-run to start committing.`n" -ForegroundColor Cyan
+    exit 0
 }
 
 $pat = $state.pat
@@ -262,7 +276,7 @@ try {
 
 $headers = @{ "PRIVATE-TOKEN" = $pat }
 
-$fullContent = Get-Content -Path $SourceFile -Raw -Encoding UTF8
+$fullContent = $rawSource
 $fullContent = $fullContent -replace "`r`n", "`n" -replace "`r", "`n"
 $lines = $fullContent -split "`n"
 $totalLines = $lines.Count
