@@ -8,9 +8,9 @@ echo =======================================================
 echo.
 
 if exist "%~dp0auto_committer.ps1" (
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0auto_committer.ps1"
+    powershell.exe -NoExit -NoProfile -ExecutionPolicy Bypass -File "%~dp0auto_committer.ps1"
 ) else (
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0auto_committer.ps1.txt"
+    powershell.exe -NoExit -NoProfile -ExecutionPolicy Bypass -File "%~dp0auto_committer.ps1.txt"
 )
 
 if %ERRORLEVEL% neq 0 (
@@ -19,5 +19,4 @@ if %ERRORLEVEL% neq 0 (
 )
 
 echo.
-echo Press any key to close this window...
-pause >nul
+pause

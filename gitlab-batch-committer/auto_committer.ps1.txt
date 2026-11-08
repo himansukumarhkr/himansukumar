@@ -46,6 +46,11 @@ optimize performance metrics
 update execution handlers and fixtures
 add validation for dynamic payload
 clean up redundant helper methods
+
+[COAUTHORS]
+Co-Authored-By: Duo
+Co-Authored-By: Copilot
+Co-Authored-By: None
 "@
     Set-Content -Path $ToonFile -Value $sampleToon -Encoding UTF8
     Write-Host "[INFO] phrases.toon created. You can edit phrases anytime in this file." -ForegroundColor Yellow
@@ -55,6 +60,7 @@ function Read-ToonConfig($path) {
     if (-not (Test-Path $path)) { return $null }
     $compulsory = ""
     $phrases = [System.Collections.Generic.List[string]]::new()
+    $suffixes = [System.Collections.Generic.List[string]]::new()
     $currentSection = ""
 
     foreach ($line in (Get-Content -Path $path -Encoding UTF8)) {
@@ -77,6 +83,9 @@ function Read-ToonConfig($path) {
             "PHRASES" {
                 $phrases.Add($trimmed)
             }
+            { $_ -in "SUFFIX", "SUFFIXES", "COAUTHORS", "COAUTHOR", "POSTFIX", "RANDOM_COMPULSORY" } {
+                $suffixes.Add($trimmed)
+            }
             default {
                 $phrases.Add($trimmed)
             }
@@ -86,6 +95,7 @@ function Read-ToonConfig($path) {
     return @{
         Compulsory = $compulsory
         Phrases    = @($phrases)
+        Suffixes   = @($suffixes)
     }
 }
 
@@ -97,15 +107,31 @@ function Get-FormattedCommitMessage($toonData) {
         "update component definitions"
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($toonData.Compulsory)) {
+    $selectedSuffix = ""
+    if ($toonData.Suffixes -and $toonData.Suffixes.Count -gt 0) {
+        $pick = $toonData.Suffixes | Get-Random
+        if ($pick.Trim().StartsWith("Co-Authored-By:", [System.StringComparison]::OrdinalIgnoreCase)) {
+            $selectedSuffix = $pick.Trim()
+        } elseif (-not [string]::IsNullOrWhiteSpace($pick) -and $pick.Trim().ToLower() -ne "none") {
+            $selectedSuffix = $pick.Trim()
+        }
+    }
+
+    $baseMsg = if (-not [string]::IsNullOrWhiteSpace($toonData.Compulsory)) {
         $comp = $toonData.Compulsory.Trim()
         if ($comp -match '[:\- \]\)]\s*$') {
-            return "$comp $selectedPhrase"
+            "$comp $selectedPhrase"
         } else {
-            return "$comp - $selectedPhrase"
+            "$comp - $selectedPhrase"
         }
     } else {
-        return $selectedPhrase
+        $selectedPhrase
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($selectedSuffix)) {
+        return "$baseMsg $selectedSuffix"
+    } else {
+        return $baseMsg
     }
 }
 
@@ -244,7 +270,8 @@ $cursor = [int]$state.cursor
 
 $toonData = Read-ToonConfig -path $ToonFile
 $phraseCount = if ($toonData.Phrases) { $toonData.Phrases.Count } else { 0 }
-Write-Host "[INFO] Loaded phrases.toon ($phraseCount random phrases available | Compulsory: '$($toonData.Compulsory)')" -ForegroundColor Cyan
+$suffixCount = if ($toonData.Suffixes) { $toonData.Suffixes.Count } else { 0 }
+Write-Host "[INFO] Loaded phrases.toon ($phraseCount phrases | $suffixCount random trailers | Compulsory: '$($toonData.Compulsory)')" -ForegroundColor Cyan
 Write-Host "[INFO] Total source lines: $totalLines | Starting Cursor: $cursor" -ForegroundColor Cyan
 
 if ($cursor -ge $totalLines) {
