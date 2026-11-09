@@ -26,10 +26,23 @@ function Pause-ForUser {
     }
 }
 
-$ScriptDir  = $PSScriptRoot
-$StateFile  = Join-Path $ScriptDir "state.json"
-$SourceFile = Join-Path $ScriptDir "source.txt"
-$ToonFile   = Join-Path $ScriptDir "phrases.toon"
+function Protect-Pat($plainText) {
+    Add-Type -AssemblyName System.Security
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($plainText)
+    $enc = [System.Security.Cryptography.ProtectedData]::Protect($bytes, $null, [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
+    return [Convert]::ToBase64String($enc)
+}
+
+function Unprotect-Pat($base64Text) {
+    Add-Type -AssemblyName System.Security
+    $bytes = [Convert]::FromBase64String($base64Text)
+    $dec = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
+    return [System.Text.Encoding]::UTF8.GetString($dec)
+}
+
+$ScriptDir   = $PSScriptRoot
+$ConfigFile  = Join-Path $ScriptDir "config.toon"
+$SourceFile  = Join-Path $ScriptDir "source.txt"
 
 $sourceCreatedFirstTime = $false
 if (-not (Test-Path $SourceFile)) {
@@ -38,30 +51,9 @@ if (-not (Test-Path $SourceFile)) {
     $sourceCreatedFirstTime = $true
 }
 
-if (-not (Test-Path $ToonFile)) {
-    $sampleToon = @"
-[COMPULSORY]
-BVB-24160
-
-[PHRASES]
-refactor core logic
-enhance stability and fix edge cases
-optimize performance metrics
-update execution handlers and fixtures
-add validation for dynamic payload
-clean up redundant helper methods
-
-[COAUTHORS]
-Co-Authored-By: Duo
-Co-Authored-By: Copilot
-Co-Authored-By: None
-"@
-    Set-Content -Path $ToonFile -Value $sampleToon -Encoding UTF8
-    Write-Host "[INFO] phrases.toon created. You can edit phrases anytime in this file." -ForegroundColor Yellow
-}
-
-function Read-ToonConfig($path) {
+function Read-ConfigFile($path) {
     if (-not (Test-Path $path)) { return $null }
+    $state = @{}
     $compulsory = ""
     $phrases = [System.Collections.Generic.List[string]]::new()
     $suffixes = [System.Collections.Generic.List[string]]::new()
@@ -79,6 +71,13 @@ function Read-ToonConfig($path) {
         }
 
         switch ($currentSection) {
+            "STATE" {
+                if ($trimmed -match '^([^=]+)=(.*)$') {
+                    $key = $Matches[1].Trim()
+                    $val = $Matches[2].Trim()
+                    $state[$key] = $val
+                }
+            }
             "COMPULSORY" {
                 if ([string]::IsNullOrWhiteSpace($compulsory)) {
                     $compulsory = $trimmed
@@ -97,14 +96,45 @@ function Read-ToonConfig($path) {
     }
 
     return @{
+        State      = $state
         Compulsory = $compulsory
         Phrases    = @($phrases)
         Suffixes   = @($suffixes)
     }
 }
 
-function Get-FormattedCommitMessage($toonData) {
-    $phrases = $toonData.Phrases
+function Save-ConfigFile($path, $configData) {
+    $state = $configData.State
+    $sb = [System.Text.StringBuilder]::new()
+    
+    [void]$sb.AppendLine("[STATE]")
+    [void]$sb.AppendLine("targetFile = $($state['targetFile'])")
+    [void]$sb.AppendLine("numCommits = $($state['numCommits'])")
+    [void]$sb.AppendLine("linesPerCommit = $($state['linesPerCommit'])")
+    [void]$sb.AppendLine("cursor = $($state['cursor'])")
+    [void]$sb.AppendLine("pat = $($state['pat'])")
+    [void]$sb.AppendLine("")
+    
+    [void]$sb.AppendLine("[COMPULSORY]")
+    [void]$sb.AppendLine($configData.Compulsory)
+    [void]$sb.AppendLine("")
+
+    [void]$sb.AppendLine("[PHRASES]")
+    foreach ($p in $configData.Phrases) {
+        [void]$sb.AppendLine($p)
+    }
+    [void]$sb.AppendLine("")
+
+    [void]$sb.AppendLine("[COAUTHORS]")
+    foreach ($c in $configData.Suffixes) {
+        [void]$sb.AppendLine($c)
+    }
+
+    Set-Content -Path $path -Value $sb.ToString().TrimEnd() -Encoding UTF8
+}
+
+function Get-FormattedCommitMessage($configData) {
+    $phrases = $configData.Phrases
     $selectedPhrase = if ($phrases -and $phrases.Count -gt 0) {
         $phrases | Get-Random
     } else {
@@ -112,8 +142,8 @@ function Get-FormattedCommitMessage($toonData) {
     }
 
     $selectedSuffix = ""
-    if ($toonData.Suffixes -and $toonData.Suffixes.Count -gt 0) {
-        $pick = $toonData.Suffixes | Get-Random
+    if ($configData.Suffixes -and $configData.Suffixes.Count -gt 0) {
+        $pick = $configData.Suffixes | Get-Random
         if ($pick.Trim().StartsWith("Co-Authored-By:", [System.StringComparison]::OrdinalIgnoreCase)) {
             $selectedSuffix = $pick.Trim()
         } elseif (-not [string]::IsNullOrWhiteSpace($pick) -and $pick.Trim().ToLower() -ne "none") {
@@ -121,8 +151,8 @@ function Get-FormattedCommitMessage($toonData) {
         }
     }
 
-    $baseMsg = if (-not [string]::IsNullOrWhiteSpace($toonData.Compulsory)) {
-        $comp = $toonData.Compulsory.Trim()
+    $baseMsg = if (-not [string]::IsNullOrWhiteSpace($configData.Compulsory)) {
+        $comp = $configData.Compulsory.Trim()
         if ($comp -match '[:\- \]\)]\s*$') {
             "$comp $selectedPhrase"
         } else {
@@ -141,7 +171,7 @@ function Get-FormattedCommitMessage($toonData) {
 
 function New-StateConfig {
     Write-Host "`n[SETUP] Configuring GitLab Batch Committer..." -ForegroundColor Cyan
-    $pat       = Read-Host "Enter your GitLab Personal Access Token (PAT)"
+    $patInput  = Read-Host "Enter your GitLab Personal Access Token (PAT)"
     $targetUrl = Read-Host "Enter Target GitLab File URL"
     
     $numCommits = Read-Host "Enter number of commits per run [Default: 5]"
@@ -150,56 +180,55 @@ function New-StateConfig {
     $linesPer = Read-Host "Enter lines per commit [Default: 2]"
     $linesPer = if ([string]::IsNullOrWhiteSpace($linesPer)) { 2 } else { [int]$linesPer }
 
-    $storedPat = $pat
-    try {
-        $patBytes = [System.Text.Encoding]::UTF8.GetBytes($pat)
-        $encryptedBytes = [System.Security.Cryptography.ProtectedData]::Protect(
-            $patBytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser
-        )
-        $storedPat = [Convert]::ToBase64String($encryptedBytes)
-        Write-Host "[SUCCESS] PAT protected via DPAPI." -ForegroundColor Green
-    } catch {
-        Write-Host "[WARNING] DPAPI restricted by environment. Saving token in standard format." -ForegroundColor Yellow
+    $encryptedPat = Protect-Pat $patInput
+    Write-Host "[SUCCESS] PAT securely encrypted with LocalMachine binding." -ForegroundColor Green
+
+    $defaultPhrases = @(
+        "refactor core logic",
+        "enhance stability and fix edge cases",
+        "optimize performance metrics",
+        "update execution handlers and fixtures",
+        "add validation for dynamic payload",
+        "clean up redundant helper methods"
+    )
+
+    $defaultCoauthors = @(
+        "Co-Authored-By: Duo",
+        "Co-Authored-By: Copilot",
+        "Co-Authored-By: None"
+    )
+
+    $newConfig = @{
+        State = @{
+            targetFile     = $targetUrl
+            numCommits     = $numCommits
+            linesPerCommit = $linesPer
+            cursor         = 0
+            pat            = $encryptedPat
+        }
+        Compulsory = "BVB-24160"
+        Phrases    = $defaultPhrases
+        Suffixes   = $defaultCoauthors
     }
 
-    $newState = [PSCustomObject]@{
-        pat            = $storedPat
-        targetFile     = $targetUrl
-        numCommits     = [int]$numCommits
-        linesPerCommit = [int]$linesPer
-        cursor         = 0
-    }
-
-    $newState | ConvertTo-Json -Depth 4 | Set-Content -Path $StateFile -Encoding UTF8
-    Write-Host "[SUCCESS] Configuration saved to state.json!" -ForegroundColor Green
-    Write-Host "[TIP] Commit messages are managed in 'phrases.toon'. You can edit them anytime in Notepad.`n" -ForegroundColor Cyan
-    return $newState
+    Save-ConfigFile -path $ConfigFile -configData $newConfig
+    Write-Host "[SUCCESS] Configuration saved to config.toon!`n" -ForegroundColor Green
+    return $newConfig
 }
 
 $isFirstRun = $false
-$state = $null
-if (Test-Path $StateFile) {
-    try {
-        $raw = Get-Content -Path $StateFile -Raw -ErrorAction Stop
-        $state = $raw | ConvertFrom-Json -ErrorAction Stop
-        if (-not $state.pat -or -not $state.targetFile) {
-            throw "Invalid state structure"
-        }
-    } catch {
-        Write-Host "[WARNING] state.json is corrupted or invalid. Prompting for setup..." -ForegroundColor Yellow
-        $state = New-StateConfig
-        $isFirstRun = $true
-    }
-} else {
-    Write-Host "[INFO] state.json not found. Running initial setup..." -ForegroundColor Cyan
-    $state = New-StateConfig
+$configData = Read-ConfigFile $ConfigFile
+
+if ($null -eq $configData -or [string]::IsNullOrWhiteSpace($configData.State["pat"]) -or [string]::IsNullOrWhiteSpace($configData.State["targetFile"])) {
+    Write-Host "[INFO] Valid config.toon not found. Running initial setup..." -ForegroundColor Cyan
+    $configData = New-StateConfig
     $isFirstRun = $true
 }
 
 if ($isFirstRun -or $sourceCreatedFirstTime) {
     Write-Host "===========================================================" -ForegroundColor Green
-    Write-Host "[SETUP COMPLETE] Initial configuration has been saved." -ForegroundColor Green
-    Write-Host "[ACTION REQUIRED] Please paste your source code into 'source.txt'" -ForegroundColor Yellow
+    Write-Host "[SETUP COMPLETE] Initial configuration saved to 'config.toon'." -ForegroundColor Green
+    Write-Host "[ACTION REQUIRED] Paste your source code into 'source.txt'" -ForegroundColor Yellow
     Write-Host "and run the script again to begin committing." -ForegroundColor Yellow
     Write-Host "===========================================================`n" -ForegroundColor Green
     Pause-ForUser
@@ -214,14 +243,14 @@ if ([string]::IsNullOrWhiteSpace($rawSource)) {
     return
 }
 
-$pat = $state.pat
+$pat = ""
 try {
-    $bytes = [Convert]::FromBase64String($state.pat)
-    $decryptedBytes = [System.Security.Cryptography.ProtectedData]::Unprotect(
-        $bytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser
-    )
-    $pat = [System.Text.Encoding]::UTF8.GetString($decryptedBytes)
-} catch {}
+    $pat = Unprotect-Pat $configData.State["pat"]
+} catch {
+    Write-Host "[ERROR] Failed to decrypt PAT. This file is locked to its original machine." -ForegroundColor Red
+    Pause-ForUser
+    return
+}
 
 function Parse-GitLabUrl($url, $token) {
     $cleanUrl = if ($url -match '^([^?]+)') { $Matches[1] } else { $url }
@@ -270,19 +299,12 @@ function Parse-GitLabUrl($url, $token) {
 }
 
 try {
-    $targetInfo = Parse-GitLabUrl $state.targetFile $pat
+    $targetInfo = Parse-GitLabUrl $configData.State["targetFile"] $pat
 } catch {
     Write-Host "[WARNING] Connection check failed: $_" -ForegroundColor Yellow
-    $state = New-StateConfig
-    $pat = $state.pat
-    try {
-        $bytes = [Convert]::FromBase64String($state.pat)
-        $decryptedBytes = [System.Security.Cryptography.ProtectedData]::Unprotect(
-            $bytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser
-        )
-        $pat = [System.Text.Encoding]::UTF8.GetString($decryptedBytes)
-    } catch {}
-    $targetInfo = Parse-GitLabUrl $state.targetFile $pat
+    $configData = New-StateConfig
+    $pat = Unprotect-Pat $configData.State["pat"]
+    $targetInfo = Parse-GitLabUrl $configData.State["targetFile"] $pat
 }
 
 $headers = @{ "PRIVATE-TOKEN" = $pat }
@@ -291,12 +313,11 @@ $fullContent = $rawSource
 $fullContent = $fullContent -replace "`r`n", "`n" -replace "`r", "`n"
 $lines = $fullContent -split "`n"
 $totalLines = $lines.Count
-$cursor = [int]$state.cursor
+$cursor = [int]$configData.State["cursor"]
 
-$toonData = Read-ToonConfig -path $ToonFile
-$phraseCount = if ($toonData.Phrases) { $toonData.Phrases.Count } else { 0 }
-$suffixCount = if ($toonData.Suffixes) { $toonData.Suffixes.Count } else { 0 }
-Write-Host "[INFO] Loaded phrases.toon ($phraseCount phrases | $suffixCount random trailers | Compulsory: '$($toonData.Compulsory)')" -ForegroundColor Cyan
+$phraseCount = if ($configData.Phrases) { $configData.Phrases.Count } else { 0 }
+$suffixCount = if ($configData.Suffixes) { $configData.Suffixes.Count } else { 0 }
+Write-Host "[INFO] Loaded config.toon ($phraseCount phrases | $suffixCount co-authors | Compulsory: '$($configData.Compulsory)')" -ForegroundColor Cyan
 Write-Host "[INFO] Total source lines: $totalLines | Starting Cursor: $cursor" -ForegroundColor Cyan
 
 if ($cursor -ge $totalLines) {
@@ -351,8 +372,8 @@ if ($null -eq $existingContent) {
     $existingContent = ""
 }
 
-$numCommits = [int]$state.numCommits
-$linesPer   = [int]$state.linesPerCommit
+$numCommits = [int]$configData.State["numCommits"]
+$linesPer   = [int]$configData.State["linesPerCommit"]
 
 for ($i = 1; $i -le $numCommits; $i++) {
     if ($cursor -ge $totalLines) {
@@ -376,15 +397,15 @@ for ($i = 1; $i -le $numCommits; $i++) {
         $existingContent += "`n" + $batchText
     }
 
-    $msg = Get-FormattedCommitMessage -toonData $toonData
+    $msg = Get-FormattedCommitMessage -configData $configData
 
     Write-Host "Commit Message: '$msg'" -ForegroundColor DarkCyan
     $ok = Commit-TargetFileContent -apiUrl $targetInfo.ApiUrl -branch $targetInfo.Branch -content $existingContent -message $msg -headers $headers
 
     if ($ok) {
         $cursor = $endIndex
-        $state.cursor = $cursor
-        $state | ConvertTo-Json -Depth 4 | Set-Content -Path $StateFile -Encoding UTF8
+        $configData.State["cursor"] = $cursor
+        Save-ConfigFile -path $ConfigFile -configData $configData
         Write-Host "[SUCCESS] Commit pushed successfully!" -ForegroundColor Green
     } else {
         Write-Host "[FAILED] Commit failed. Aborting remaining batches." -ForegroundColor Red

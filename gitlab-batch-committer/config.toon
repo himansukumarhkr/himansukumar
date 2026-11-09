@@ -1,3 +1,10 @@
+[STATE]
+targetFile = 
+numCommits = 5
+linesPerCommit = 2
+cursor = 0
+pat = 
+
 [COMPULSORY]
 BVB-24160
 
