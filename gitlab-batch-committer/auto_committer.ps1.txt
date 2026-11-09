@@ -18,11 +18,11 @@ public class TrustAllCertsPolicy : ICertificatePolicy {
 [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls11 -bor [System.Net.SecurityProtocolType]::Tls
 
 function Pause-ForUser {
-    Write-Host "`nPress any key to exit..." -NoNewline -ForegroundColor Gray
+    Write-Host ""
     try {
-        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+        $null = [System.Console]::ReadKey($true)
     } catch {
-        $null = Read-Host
+        cmd.exe /c pause
     }
 }
 
@@ -203,7 +203,7 @@ if ($isFirstRun -or $sourceCreatedFirstTime) {
     Write-Host "and run the script again to begin committing." -ForegroundColor Yellow
     Write-Host "===========================================================`n" -ForegroundColor Green
     Pause-ForUser
-    exit 0
+    return
 }
 
 $rawSource = if (Test-Path $SourceFile) { Get-Content -Path $SourceFile -Raw -Encoding UTF8 } else { "" }
@@ -211,7 +211,7 @@ if ([string]::IsNullOrWhiteSpace($rawSource)) {
     Write-Host "`n[WARNING] 'source.txt' is empty." -ForegroundColor Yellow
     Write-Host "Please paste your source code into 'source.txt' and re-run to start committing.`n" -ForegroundColor Cyan
     Pause-ForUser
-    exit 0
+    return
 }
 
 $pat = $state.pat
