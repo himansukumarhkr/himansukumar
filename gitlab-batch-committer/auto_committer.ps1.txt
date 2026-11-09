@@ -17,6 +17,15 @@ public class TrustAllCertsPolicy : ICertificatePolicy {
 
 [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls11 -bor [System.Net.SecurityProtocolType]::Tls
 
+function Pause-ForUser {
+    Write-Host "`nPress any key to exit..." -NoNewline -ForegroundColor Gray
+    try {
+        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    } catch {
+        $null = Read-Host
+    }
+}
+
 $ScriptDir  = $PSScriptRoot
 $StateFile  = Join-Path $ScriptDir "state.json"
 $SourceFile = Join-Path $ScriptDir "source.txt"
@@ -193,6 +202,7 @@ if ($isFirstRun -or $sourceCreatedFirstTime) {
     Write-Host "[ACTION REQUIRED] Please paste your source code into 'source.txt'" -ForegroundColor Yellow
     Write-Host "and run the script again to begin committing." -ForegroundColor Yellow
     Write-Host "===========================================================`n" -ForegroundColor Green
+    Pause-ForUser
     exit 0
 }
 
@@ -200,6 +210,7 @@ $rawSource = if (Test-Path $SourceFile) { Get-Content -Path $SourceFile -Raw -En
 if ([string]::IsNullOrWhiteSpace($rawSource)) {
     Write-Host "`n[WARNING] 'source.txt' is empty." -ForegroundColor Yellow
     Write-Host "Please paste your source code into 'source.txt' and re-run to start committing.`n" -ForegroundColor Cyan
+    Pause-ForUser
     exit 0
 }
 
@@ -377,8 +388,10 @@ for ($i = 1; $i -le $numCommits; $i++) {
         Write-Host "[SUCCESS] Commit pushed successfully!" -ForegroundColor Green
     } else {
         Write-Host "[FAILED] Commit failed. Aborting remaining batches." -ForegroundColor Red
+        Pause-ForUser
         break
     }
 }
 
 Write-Host "`n[DONE] Batch run completed. Current saved cursor: $cursor" -ForegroundColor Cyan
+Pause-ForUser
